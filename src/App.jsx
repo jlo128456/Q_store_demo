@@ -5,6 +5,7 @@ import {
   save, tx, typeStock, outstanding, availability, shortfalls, activeTypes, blines, issuedRows, left, saveBooking,
   issueBooking, defect, returnItems, closeDefect, addAssets, overdue, onBooking, barcode,
 } from "./store.js";
+import { Stocktakes, Stocktake, StocktakeFinalise, StockSheet, StocktakeReport, Reports, ReportRegister, ReportOnIssue, ReportLosses, ReportMovements } from "./Audit.jsx";
 
 const OPEN = ["requested", "reserved", "issued", "part_returned"];
 const OUT = ["issued", "part_returned"];
@@ -932,11 +933,15 @@ function Labels({ arg }) {
 /* ---------- app shell ---------- */
 const SCREENS = { dashboard: Dashboard, bookings: Bookings, bookingForm: BookingForm, booking: Booking, issue: Issue, ret: Return,
   voucher: Voucher, availability: Availability, items: Items, itemForm: ItemForm, item: Item, asset: Asset, defects: Defects,
-  users: Users, userForm: UserForm, log: Log, labels: Labels };
-const QM_ONLY = ["issue", "ret", "defects", "users", "userForm", "log", "labels", "itemForm"];
+  users: Users, userForm: UserForm, log: Log, labels: Labels,
+  stocktakes: Stocktakes, stocktake: Stocktake, stFinalise: StocktakeFinalise, stockSheet: StockSheet, stReport: StocktakeReport,
+  reports: Reports, rRegister: ReportRegister, rOnIssue: ReportOnIssue, rLosses: ReportLosses, rMovements: ReportMovements };
+const AUDIT = ["stocktakes", "stocktake", "stFinalise", "stockSheet", "stReport", "reports", "rRegister", "rOnIssue", "rLosses", "rMovements"];
+const QM_ONLY = ["issue", "ret", "defects", "users", "userForm", "log", "labels", "itemForm", ...AUDIT];
 const NAV = [["dashboard", "Dashboard", ["dashboard"]], ["bookings", "Bookings", ["bookings", "booking", "bookingForm", "issue", "ret", "voucher"]],
   ["availability", "Availability", ["availability"]], ["items", "Equipment", ["items", "item", "asset", "itemForm", "labels"]]];
-const QM_NAV = [["defects", "Repairs & losses", ["defects"]], ["users", "Leaders", ["users", "userForm"]], ["log", "Log", ["log"]]];
+const QM_NAV = [["defects", "Repairs & losses", ["defects"]], ["stocktakes", "Stocktake", ["stocktakes", "stocktake", "stFinalise", "stockSheet", "stReport"]],
+  ["reports", "Reports", ["reports", "rRegister", "rOnIssue", "rLosses", "rMovements"]], ["users", "Leaders", ["users", "userForm"]], ["log", "Log", ["log"]]];
 
 export default function App() {
   const [route, setRoute] = useState({ view: db.me ? "dashboard" : "login", arg: null, n: 0 });
@@ -976,6 +981,7 @@ export default function App() {
               {v === "bookings" && isQM() && requested > 0 && <i className="badge">{requested}</i>}
               {v === "bookings" && isQM() && late > 0 && <i className="badge red">{late}</i>}
               {v === "defects" && openDefects > 0 && <i className="badge amber">{openDefects}</i>}
+              {v === "stocktakes" && S.stocktakes.some((x) => x.status === "open") && <i className="badge amber">open</i>}
             </a>
           ))}</nav>
           <div className="who"><span>{db.me.name}{isQM() && <> <em>QM</em></>}</span><a onClick={() => { db.me = null; go("login"); }}>Sign out</a></div>

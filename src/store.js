@@ -140,10 +140,12 @@ function seed(){
 }
 try{const d=JSON.parse(localStorage.getItem(KEY));if(d&&d.S){S=d.S;me=d.me?byId("users",d.me):null}}catch(e){}
 if(!S)seed();
+function ensure(){for(const k of ["stocktakes","st_scans","st_counts","st_results"])S[k]=S[k]||[]}
+ensure();
 
 
 export const db={get S(){return S},get me(){return me},set me(u){me=u;save()},
-  takeFlashes(){const f=flashes;flashes=[];return f},reset(){try{localStorage.removeItem(KEY)}catch(e){}seed();me=null;save()}};
+  takeFlashes(){const f=flashes;flashes=[];return f},reset(){try{localStorage.removeItem(KEY)}catch(e){}seed();ensure();me=null;save()}};
 export {GROUP,STATUS,ASSET,StoresError,esc,iso,today,addDays,now,fd,daysLate,ref,byId,nid,user,isQM,flash,log,save,tx,
   typeStock,outstanding,committed,availability,shortfalls,activeTypes,blines,issuedRows,left,saveBooking,issueBooking,
   defect,returnItems,closeDefect,addAssets,overdue,onBooking,barcode};

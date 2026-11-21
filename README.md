@@ -4,6 +4,8 @@ A clickable demo of the **Jimboomba Scout Group Q Store**, where equipment is bo
 
 The real Q Store is the Python app that runs on the Windows PC at the hall. This demo is for showing people how it works.
 
+Sign in as the Quartermaster to try **Stocktake** (scan and count the store, then sign off the differences) and **Reports** (printable equipment register, items on issue, overdue items, damage and losses, the audit trail and stocktake reports).
+
 **Demo PINs:** Quartermaster `1234`, any leader `1111`. Changes stay in each person's own browser. The yellow bar has a **Reset demo** button.
 
 ## What's in here
@@ -11,6 +13,8 @@ The real Q Store is the Python app that runs on the Windows PC at the hall. This
 | Path | What it is |
 |---|---|
 | `src/App.jsx` | React screens: dashboard, bookings, issue, return, availability, equipment, repairs, leaders, log, voucher, labels |
+| `src/Audit.jsx` | Stocktake (count, review, sign off) and printable audit reports |
+| `src/audit.js` | Stocktake rules (mirrors `qstore/audit.py` in the Python app) |
 | `src/store.js` | Data, store rules and sample data (mirrors `qstore/db.py` in the Python app) |
 | `src/qstore.css` | Styles |
 | `build.mjs` | Builds `dist/index.html`, one self-contained page |
