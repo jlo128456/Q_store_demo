@@ -73,20 +73,26 @@ function issueBooking(b,assetIds,bulk,signer){
   log("Signed for",`${signer.name} signed for issue on ${ref(b.id)}`,{booking_id:b.id})
 }
 function defect(o){S.defects.push({id:nid("defects"),reported_at:now(),reported_by:me.id,status:"open",closed_at:null,closed_notes:"",asset_id:null,booking_id:null,qty:1,...o})}
-function returnItems(b,assets,bulk){
+function returnItems(b,assets,bulk,byLeader=false){
   const st=now(),r=ref(b.id);let did=0;
+  const ret={id:nid("returns"),booking_id:b.id,returned_by:me.id,returned_at:st,by_leader:byLeader,status:byLeader?"pending":"checked",
+    checked_at:byLeader?null:st,checked_by:byLeader?null:me.id,check_notes:"",lines:[]};
+  const by=byLeader?" (leader return, awaiting QM check)":"";
+  const line=(i,g,dm,ms,notes)=>ret.lines.push({id:nid("return_lines"),issued_id:i.id,type_id:i.type_id,asset_id:i.asset_id,good:g,damaged:dm,missing:ms,notes,check_result:""});
   for(const [iid,[cond,notes]] of Object.entries(assets)){const i=byId("issued",iid);if(!i||i.returned_at)continue;const a=byId("assets",i.asset_id),t=byId("types",i.type_id);did++;
-    if(cond==="good"){Object.assign(i,{returned_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"in",condition:"Serviceable"});log("Returned",`${a.tag} ${t.name} serviceable from ${r}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}
-    else if(cond==="damaged"){Object.assign(i,{damaged_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"repair",condition:"Unserviceable"});defect({kind:"damage",type_id:t.id,asset_id:a.id,booking_id:b.id,description:notes});log("Returned damaged",`${a.tag} ${t.name} from ${r}: ${notes}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}
-    else{if(!notes)throw new StoresError(`Say what happened to missing item ${a.tag}.`);Object.assign(i,{lost_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"lost",condition:"Missing"});defect({kind:"loss",type_id:t.id,asset_id:a.id,booking_id:b.id,description:notes});log("Reported missing",`${a.tag} ${t.name} on ${r}: ${notes}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}}
+    if(cond==="good"){Object.assign(i,{returned_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"in",condition:"Serviceable"});line(i,1,0,0,notes);log("Returned",`${a.tag} ${t.name} serviceable from ${r}${by}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}
+    else if(cond==="damaged"){Object.assign(i,{damaged_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"repair",condition:"Unserviceable"});defect({kind:"damage",type_id:t.id,asset_id:a.id,booking_id:b.id,description:notes});line(i,0,1,0,notes);log("Returned damaged",`${a.tag} ${t.name} from ${r}: ${notes}${by}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}
+    else{if(!notes)throw new StoresError(`Say what happened to missing item ${a.tag}.`);Object.assign(i,{lost_qty:1,returned_at:st,return_notes:notes});Object.assign(a,{status:"lost",condition:"Missing"});defect({kind:"loss",type_id:t.id,asset_id:a.id,booking_id:b.id,description:notes});line(i,0,0,1,notes);log("Reported missing",`${a.tag} ${t.name} on ${r}: ${notes}${by}`,{booking_id:b.id,asset_id:a.id,type_id:t.id})}}
   for(const [iid,[g,dm,ms,notes]] of Object.entries(bulk)){if(g+dm+ms===0)continue;const i=byId("issued",iid),t=byId("types",i.type_id),l=left(i);
     if(Math.min(g,dm,ms)<0||g+dm+ms>l)throw new StoresError(`${t.name}: only ${l} still out, check the numbers.`);
     if(ms&&!notes)throw new StoresError(`Say what happened to the missing ${t.name}.`);did++;
     i.returned_qty+=g;i.damaged_qty+=dm;i.lost_qty+=ms;i.return_notes=(i.return_notes+" "+notes).trim();if(left(i)===0)i.returned_at=st;
     if(dm){t.qty_us+=dm;defect({kind:"damage",type_id:t.id,qty:dm,booking_id:b.id,description:notes})}
     if(ms){t.qty_total-=ms;defect({kind:"loss",type_id:t.id,qty:ms,booking_id:b.id,description:notes})}
-    log("Returned",`${t.name}: ${g} serviceable, ${dm} damaged, ${ms} missing from ${r}`+(notes?` (${notes})`:""),{booking_id:b.id,type_id:t.id})}
+    line(i,g,dm,ms,notes);log("Returned",`${t.name}: ${g} serviceable, ${dm} damaged, ${ms} missing from ${r}`+(notes?` (${notes})`:"")+by,{booking_id:b.id,type_id:t.id})}
   if(!did)throw new StoresError("Nothing was marked as returned.");
+  S.returns.push(ret);
+  if(byLeader)log("Leader return",`${me.name} returned equipment on ${r} and confirmed with their PIN`,{booking_id:b.id});
   const still=Object.values(outstanding(b.id)).reduce((a,c)=>a+c,0);
   b.status=still?"part_returned":"returned";b.closed_at=still?null:st;return b.status
 }
@@ -124,6 +130,7 @@ function seed(){
    ["UHF handheld radio","Safety","asset",6,"Office","RAD"],["Tent pegs","Tents","bulk",300,"Bin 4",""],["Tarp 3x4m","Shelter","bulk",15,"Shelf E1",""],
    ["Rope 10m (pioneering)","Pioneering","bulk",40,"Shelf F1",""],["Lashing spars 2.4m","Pioneering","bulk",60,"Rack G",""],["Camp chairs","Furniture","bulk",24,"Bay H",""],["Water jerry can 20L","Cooking","bulk",8,"Shelf C4",""]];
   const T={};I.forEach(([n,c,k,q,loc,p])=>{const t={id:nid("types"),name:n,category:c,kind:k,unit:"each",location:loc,tag_prefix:p,qty_total:k==="bulk"?q:0,qty_us:0,notes:"",active:true};S.types.push(t);T[n]=t.id;if(k==="asset")addAssets(t,q,{acquired:"2024-03-01"})});
+  for(const [n,c] of [["Tent pegs","9312345000012"],["Tarp 3x4m","9312345000029"],["Camp chairs","9312345000036"]])S.types.find(t=>t.name===n).barcode=c;
   S.assets.find(a=>a.tag==="TNT-001").serial="OZ-55821";S.assets.find(a=>a.tag==="RAD-001").serial="GME-TX667-0193";
   me=S.users[0];
   const book=(act,l,s,e,lines,st)=>{const o={};for(const k in lines)o[T[k]]=lines[k];const id=saveBooking({activity:act,leader_id:ids[l],start_date:s,end_date:e,notes:""},o,null,st);log("Booking added",`${ref(id)} ${act}`,{booking_id:id});return id};
@@ -140,12 +147,29 @@ function seed(){
 }
 try{const d=JSON.parse(localStorage.getItem(KEY));if(d&&d.S){S=d.S;me=d.me?byId("users",d.me):null}}catch(e){}
 if(!S)seed();
-function ensure(){for(const k of ["stocktakes","st_scans","st_counts","st_results"])S[k]=S[k]||[]}
+function ensure(){for(const k of ["stocktakes","st_scans","st_counts","st_results","returns"])S[k]=S[k]||[];S.types.forEach(t=>{if(t.barcode===undefined)t.barcode=""})}
 ensure();
 
 
+/* ---------- barcodes (mirrors find_code in the Python app) ---------- */
+const cleanCode=c=>[...String(c||"")].filter(ch=>ch.charCodeAt(0)>=32&&ch.charCodeAt(0)<=126).join("").trim().slice(0,64);
+function findCode(code){
+  const c=cleanCode(code).toUpperCase();if(!c)return [null,null];
+  const a=S.assets.find(x=>x.tag.toUpperCase()===c)||S.assets.find(x=>x.serial&&x.serial.toUpperCase()===c);
+  if(a)return ["asset",a];
+  const t=S.types.find(x=>x.active&&x.barcode&&x.barcode.toUpperCase()===c);
+  if(t)return ["type",t];
+  if(/^QB-\d+$/.test(c)&&byId("bookings",+c.slice(3)))return ["booking",+c.slice(3)];
+  return [null,null];
+}
+function checkCodeFree(code,ignoreType){
+  const [k,r]=findCode(code);
+  if(k==="asset")throw new StoresError(`${code} is already registered to ${r.tag} (${byId("types",r.type_id).name}).`);
+  if(k==="type"&&r.id!==ignoreType)throw new StoresError(`${code} is already the product barcode for ${r.name}.`);
+  if(k==="booking")throw new StoresError(`${code} looks like a booking number. Use a different barcode.`);
+}
 export const db={get S(){return S},get me(){return me},set me(u){me=u;save()},
   takeFlashes(){const f=flashes;flashes=[];return f},reset(){try{localStorage.removeItem(KEY)}catch(e){}seed();ensure();me=null;save()}};
 export {GROUP,STATUS,ASSET,StoresError,esc,iso,today,addDays,now,fd,daysLate,ref,byId,nid,user,isQM,flash,log,save,tx,
   typeStock,outstanding,committed,availability,shortfalls,activeTypes,blines,issuedRows,left,saveBooking,issueBooking,
-  defect,returnItems,closeDefect,addAssets,overdue,onBooking,barcode};
+  defect,returnItems,closeDefect,addAssets,overdue,onBooking,barcode,cleanCode,findCode,checkCodeFree};

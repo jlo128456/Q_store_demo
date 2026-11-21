@@ -143,3 +143,14 @@ details.addbox{margin-top:.8rem;border-top:1px dashed var(--line);padding-top:.7
 }
 @media print{html,body{overflow:visible!important;width:auto!important}.sheet,.report{width:auto!important;max-width:100%!important;margin:0!important}}
 @media print{.sheet{padding:0 3px!important}}
+/* barcode registration */
+.newtype{background:var(--soft);border:1px dashed var(--line);border-radius:6px;padding:.8rem .8rem 0;margin-bottom:.8rem}
+ul.added{list-style:none;padding:0;margin:.3rem 0 0;display:flex;flex-wrap:wrap;gap:.3rem}
+ul.added li{background:var(--ok-soft);border-radius:4px;padding:.15rem .5rem}
+.bigcode{font-size:1.8rem;margin:.4rem 0 .8rem;word-break:break-all}
+ol.steps{padding-left:1.2rem}ol.steps li{margin-bottom:.5rem}
+fieldset{border:1px solid var(--line);border-radius:6px;margin:0 0 .8rem}legend{font-weight:600;font-size:.88rem}
+/* booking form: find item */
+.findrow{display:flex;gap:.8rem;align-items:center}.findrow input{flex:1}
+.list tr.found td{background:var(--brass-soft)}.list tr.found td:first-child{box-shadow:inset 4px 0 0 var(--brass);font-weight:700}
+.chosenlist{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:.5rem .7rem;font-size:.9rem}

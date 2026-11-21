@@ -126,8 +126,9 @@ export function Stocktake({ go, refresh, arg }) {
     if (!code.trim()) return;
     const res = tx(() => scanForStocktake(st, code, undo));
     if (!res) return refresh();
-    const [ok, level, text] = res;
+    const [ok, level, text, , extra] = res;
     if (!undo) beep(ok);
+    if (extra && extra.bulk) setCounts((c) => ({ ...c, [extra.bulk]: String(extra.count) }));
     setMsg([level, text]); bump((n) => n + 1);
   };
   const save = (e) => {

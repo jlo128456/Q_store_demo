@@ -5,6 +5,9 @@ import {
   save, tx, typeStock, outstanding, availability, shortfalls, activeTypes, blines, issuedRows, left, saveBooking,
   issueBooking, defect, returnItems, closeDefect, addAssets, overdue, onBooking, barcode,
 } from "./store.js";
+import { cleanCode, findCode, checkCodeFree } from "./store.js";
+import { Register, ScannerTest, ScanAdd, ScanInput } from "./Scanning.jsx";
+import { Returns, ReturnCheck, ReturnsTable, pendingReturns, retRef } from "./Returns.jsx";
 import { Stocktakes, Stocktake, StocktakeFinalise, StockSheet, StocktakeReport, Reports, ReportRegister, ReportOnIssue, ReportLosses, ReportMovements } from "./Audit.jsx";
 
 const OPEN = ["requested", "reserved", "issued", "part_returned"];
@@ -67,7 +70,7 @@ function ScanBox({ placeholder, onScan, tags, label, msg }) {
           {tags.map((t) => <button type="button" key={t} className="chip" onClick={() => onScan(t)}>{t}</button>)}
         </div>
       )}
-      <p className={`scanmsg ${msg ? msg[0] : ""}`} aria-live="polite">{msg ? msg[1] : ""}</p>
+      <p className={`scanmsg ${msg ? msg[0] : ""}`} aria-live="polite">{msg ? msg[1] : ""}{msg && msg[2] && <> <a onClick={msg[2].onClick}>{msg[2].label}</a></>}</p>
     </>
   );
 }
@@ -134,6 +137,13 @@ function Dashboard({ go, mine }) {
           <div className={`tile ${tot("lost") ? "red" : ""}`}><b>{tot("lost")}</b><span>missing</span></div>
         </div>
       )}
+      {isQM() && pendingReturns().length > 0 && (
+        <section className="panel alert-amber">
+          <h2>Returns to check <a style={{ marginLeft: "auto", fontSize: ".85rem", fontWeight: 400 }} onClick={() => go("returns")}>All returns →</a></h2>
+          <p className="hint">Leaders returned these while no Quartermaster was here. Check the equipment is in the store and in the condition they reported.</p>
+          <ReturnsTable rows={pendingReturns()} go={go} showChecker={false} />
+        </section>
+      )}
       {ov.length > 0 && <section className="panel alert"><h2>Overdue — not returned</h2><BTable rows={ov} late go={go} /></section>}
       <div className="cols">
         <section className="panel"><h2>Due back today</h2>
@@ -146,6 +156,7 @@ function Dashboard({ go, mine }) {
       <section className="panel"><h2>Booked for later</h2>
         <BTable rows={B.filter((b) => b.status === "reserved" && b.start_date > wk).sort(byStart)} empty="Nothing else booked." go={go} /></section>
       <section className="panel"><h2>On issue</h2>
+        {!isQM() && <p className="hint">To return equipment, open the booking and choose <b>Return equipment</b>. You don't need the Quartermaster there.</p>}
         <BTable rows={B.filter((b) => OUT.includes(b.status) && b.end_date > t).sort((a, b) => a.end_date.localeCompare(b.end_date))} empty="Nothing else is out." go={go} /></section>
       {isQM() && (
         <section className="panel">
@@ -190,12 +201,54 @@ function BookingForm({ go, refresh, arg }) {
   const [filter, setFilter] = useState("");
   const [problems, setProblems] = useState([]);
   const [override, setOverride] = useState(false);
+  const [scanMsg, setScanMsg] = useState(null);
+  const [only, setOnly] = useState(null);           // the item found by a scan or Enter
+  const [focusTick, setFocusTick] = useState(0);
+  const findRef = useRef(null), qtyRefs = useRef({});
+  useEffect(() => {
+    if (!focusTick) return;
+    if (only && qtyRefs.current[only]) { qtyRefs.current[only].focus(); qtyRefs.current[only].select(); }
+    else if (findRef.current) findRef.current.focus();
+  }, [focusTick]);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const setQty = (id, v) => setF({ ...f, lines: { ...f.lines, [id]: v } });
   const datesOk = f.start_date && f.end_date && f.end_date >= f.start_date;
   const avail = {};
   if (datesOk) availability(f.start_date, f.end_date, b ? b.id : null).forEach((r) => (avail[r.t.id] = r.a));
 
+  // Find an item by typing or scanning, then edit its quantity.
+  const matches = (t) => (t.name + " " + t.category).toLowerCase().includes(filter.trim().toLowerCase());
+  const editQty = (t, msg) => { setOnly(t.id); setScanMsg(["ok", msg || `${t.name}: type how many you need, then press Enter.`]); setFocusTick((n) => n + 1); };
+  const findKey = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const text = filter.trim();
+    if (!text) return;
+    const [k, r] = findCode(text);
+    if (k === "asset" || k === "type") {
+      const t = k === "asset" ? byId("types", r.type_id) : r;
+      if (!t.active) { beep(false); return setScanMsg(["bad", `${t.name} can't be booked.`]); }
+      const gone = k === "asset" && ["lost", "written_off"].includes(r.status);
+      beep(!gone);
+      if (k === "asset") setFilter(r.tag);
+      return editQty(t, gone ? `${r.tag} ${r.status === "lost" ? "is reported missing" : "has been written off"}, but you can still book other ${t.name}. Type how many you need.`
+        : `Found ${t.name}${k === "asset" ? ` (scanned ${r.tag})` : ""}. Type how many you need, then press Enter.`);
+    }
+    const vis = activeTypes().filter(matches);
+    if (vis.length === 1) return editQty(vis[0]);
+    if (!vis.length) { beep(false); return setScanMsg(["bad", `Nothing found for "${text}".`]); }
+    setScanMsg(["warn", `${vis.length} items match. Click the quantity box of the one you want.`]);
+  };
+  const qtyKey = (t) => (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const n = int(f.lines[t.id]), a = avail[t.id];
+    if (a !== undefined && n > a) setScanMsg(["warn", `${t.name}: ${n} wanted, but only ${a} free for those dates.`]);
+    else setScanMsg(["ok", n ? `✓ ${t.name} × ${n}. Find the next item.` : `${t.name} removed.`]);
+    setFilter(""); setOnly(null); setFocusTick((x) => x + 1);
+  };
+  const showAll = () => { setFilter(""); setOnly(null); setScanMsg(null); setFocusTick((x) => x + 1); };
+  const chosen = activeTypes().filter((t) => int(f.lines[t.id]) > 0);
   const submit = (e) => {
     e.preventDefault();
     const lines = {};
@@ -236,19 +289,27 @@ function BookingForm({ go, refresh, arg }) {
           <label className="span2">Notes for the Quartermaster<textarea rows="2" value={f.notes} onChange={set("notes")} /></label>
         </div>
         <div className="panel">
-          <div className="head"><h2>Equipment</h2>
-            <input type="search" placeholder="Filter equipment…" style={{ maxWidth: 240, margin: 0 }} value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+          <h2>Equipment</h2>
+          <div className="findrow">
+            <input ref={findRef} type="search" id="finditem" className="scanbox" placeholder="Find item: type a name or scan a barcode…" autoComplete="off"
+              value={filter} onChange={(e) => { setFilter(e.target.value); setOnly(null); if (!e.target.value) setScanMsg(null); }} onKeyDown={findKey} />
+            {(filter || only) && <button type="button" className="link" onClick={showAll}>Show all items</button>}
+          </div>
+          <p className={`scanmsg ${scanMsg ? scanMsg[0] : ""}`} aria-live="polite">{scanMsg ? scanMsg[1] : ""}</p>
+          <p className="hint">Find the item you want, then type how many you need in its Quantity box. Press Enter to go back to Find for the next item. The exact items are scanned out when the equipment is issued. To try it here, type <span className="mono">TNT-005</span> or "pegs" and press Enter.</p>
+          {chosen.length > 0 && <p className="chosenlist">In this booking: {chosen.map((t) => `${t.name} × ${int(f.lines[t.id])}`).join(", ")}</p>}
           <p className="hint">{datesOk ? "Free = serviceable stock not already booked or out over those dates." : "Pick the dates to see what's free."}</p>
           <table className="list"><thead><tr><th>Item</th><th>Category</th><th className="num">Free</th><th className="num">Quantity</th></tr></thead>
             <tbody>{activeTypes().map((t) => {
               const q = int(f.lines[t.id]), a = avail[t.id];
-              const hidden = filter && !(t.name + " " + t.category).toLowerCase().includes(filter.toLowerCase()) && !q;
+              const hidden = only ? t.id !== only : filter && !findCode(filter)[0] && !matches(t);
               if (hidden) return null;
               return (
-                <tr key={t.id} className={`${q ? "chosen" : ""} ${a !== undefined && q > a ? "over" : ""}`}>
+                <tr key={t.id} className={`${q ? "chosen" : ""} ${a !== undefined && q > a ? "over" : ""} ${only === t.id ? "found" : ""}`}>
                   <td>{t.name}{t.kind === "asset" && <> <Tag /></>}</td><td>{t.category}</td>
                   <td className={`num avail ${a === 0 ? "bad" : ""}`}>{a ?? "–"}</td>
-                  <td className="num"><input type="number" min="0" className="qty" name={`qty_${t.id}`} value={f.lines[t.id] || ""} onChange={(e) => setQty(t.id, e.target.value)} /></td>
+                  <td className="num"><input type="number" min="0" className="qty" name={`qty_${t.id}`} value={f.lines[t.id] || ""} onChange={(e) => setQty(t.id, e.target.value)}
+                    onKeyDown={qtyKey(t)} ref={(el) => { qtyRefs.current[t.id] = el; }} /></td>
                 </tr>
               );
             })}</tbody></table>
@@ -305,7 +366,7 @@ function Booking({ go, refresh, arg, mine }) {
           )}
           {Q && ["reserved", ...OUT].includes(b.status) &&
             <button className={b.status === "reserved" ? "primary" : ""} onClick={() => go("issue", b.id)}>{b.status === "reserved" ? "Issue equipment" : "Issue more"}</button>}
-          {Q && onIssue && <button className="primary" onClick={() => go("ret", b.id)}>Book return</button>}
+          {onIssue && (Q || b.leader_id === db.me.id) && <button className="primary" onClick={() => go("ret", b.id)}>{Q ? "Book return" : "Return equipment"}</button>}
           {["requested", "reserved"].includes(b.status) && (Q || b.status === "requested") && <button onClick={() => go("bookingForm", b.id)}>Change</button>}
           <button onClick={() => go("voucher", b.id)}>{b.issued_at ? "Issue voucher" : "Booking sheet"}</button>
         </div>
@@ -356,6 +417,9 @@ function Booking({ go, refresh, arg, mine }) {
           ) : <p className="empty">Nothing issued yet.</p>}
         </section>
       </div>
+      {db.S.returns.some((r) => r.booking_id === b.id) && (
+        <section className="panel"><h2>Returns</h2><ReturnsTable rows={db.S.returns.filter((r) => r.booking_id === b.id)} go={go} showBooking={false} /></section>
+      )}
       <section className="panel"><h2>History</h2><History rows={db.S.log.filter((l) => l.booking_id === b.id).reverse()} /></section>
       {["requested", "reserved"].includes(b.status) && (
         <form className="inline" style={{ marginTop: "1.5rem" }} onSubmit={cancel}>
@@ -390,8 +454,17 @@ function Issue({ go, refresh, arg }) {
 
   const scan = (code) => {
     code = code.trim().toUpperCase(); if (!code) return;
-    const a = db.S.assets.find((x) => x.tag.toUpperCase() === code || (x.serial && x.serial.toUpperCase() === code));
-    if (!a) { beep(false); return setMsg(["bad", `${code}: not on the register.`]); }
+    const [k, a] = findCode(code);
+    if (k === "type") {
+      if (a.kind === "bulk" && bulk[a.id] !== undefined) {
+        const n = int(bulk[a.id]) + 1, max = typeStock(a.id).in;
+        if (n > max) { beep(false); return setMsg(["warn", `Only ${max} ${a.name} in the store.`]); }
+        beep(true); setBulk({ ...bulk, [a.id]: n }); return setMsg(["ok", `+1 ${a.name} (now ${n})`]);
+      }
+      beep(false);
+      return setMsg(["warn", a.kind === "bulk" ? `${a.name} isn't on this booking.` : `That's the product barcode for ${a.name}. Scan the item's own tag.`]);
+    }
+    if (k !== "asset") { beep(false); return setMsg(["bad", `${code}: not on the register.`, { label: "Register it", onClick: () => go("register", code) }]); }
     const name = byId("types", a.type_id).name;
     if (scanned.includes(a.id)) { beep(false); return setMsg(["warn", `${a.tag} is already scanned.`]); }
     if (a.status !== "in") { beep(false); const ob = onBooking(a.id); return setMsg(["bad", `${a.tag} ${name} can't be issued: ${ASSET[a.status]}${ob ? " on " + ref(ob) : ""}.`]); }
@@ -457,6 +530,8 @@ function Issue({ go, refresh, arg }) {
 
 function Return({ go, refresh, arg }) {
   const b = byId("bookings", arg);
+  const byLeader = !isQM();
+  const [pin, setPin] = useState("");
   const rows = issuedRows(b.id).filter((i) => left(i) > 0);
   const A = rows.filter((i) => i.a), Bk = rows.filter((i) => !i.a);
   const [marks, setMarks] = useState({});
@@ -465,10 +540,20 @@ function Return({ go, refresh, arg }) {
   const mark = (id, patch) => setMarks((m) => ({ ...m, [id]: { ...(m[id] || {}), ...patch } }));
   const cnt = (id, k, v) => setCounts((c) => ({ ...c, [id]: { ...(c[id] || {}), [k]: v } }));
 
+  if (byLeader && b.leader_id !== db.me.id) return <p>You can only return equipment on your own bookings.</p>;
+  if (!["issued", "part_returned"].includes(b.status)) return <p>Nothing is out on this booking. <a onClick={() => go("booking", b.id)}>Back to the booking</a></p>;
   const scan = (code) => {
     code = code.trim().toUpperCase(); if (!code) return;
     const i = A.find((i) => i.a.tag.toUpperCase() === code || (i.a.serial && i.a.serial.toUpperCase() === code));
-    if (!i) { beep(false); return setMsg(["bad", `${code} is not out on this booking.`]); }
+    if (!i) {
+      const bi = Bk.find((x) => x.t.barcode && x.t.barcode.toUpperCase() === code);
+      if (bi) {
+        const n = int((counts[bi.id] || {}).good) + 1;
+        if (n > left(bi)) { beep(false); return setMsg(["warn", `All ${left(bi)} ${bi.t.name} are already counted back.`]); }
+        beep(true); cnt(bi.id, "good", n); return setMsg(["ok", `+1 ${bi.t.name} back OK (now ${n} of ${left(bi)})`]);
+      }
+      beep(false); return setMsg(["bad", `${code} is not out on this booking.`]);
+    }
     if (marks[i.id] && marks[i.id].on) { beep(false); return setMsg(["warn", `${i.a.tag} already marked back.`]); }
     beep(true); mark(i.id, { on: true }); setMsg(["ok", `✓ ${i.a.tag} ${i.t.name} — check its condition.`]);
   };
@@ -477,9 +562,12 @@ function Return({ go, refresh, arg }) {
     const assets = {}, bulk = {};
     for (const [id, m] of Object.entries(marks)) if (m.on) assets[id] = [m.cond || "good", (m.note || "").trim()];
     Bk.forEach((i) => { const c = counts[i.id] || {}; bulk[i.id] = [int(c.good), int(c.dam), int(c.miss), (c.note || "").trim()]; });
-    const st = tx(() => returnItems(b, assets, bulk));
+    if (byLeader && pin !== db.me.pin) { flash("Enter your own PIN to confirm you've returned the equipment.", "error"); return refresh(); }
+    const st = tx(() => returnItems(b, assets, bulk, byLeader));
     if (st) {
-      flash(st === "returned" ? `All equipment back. ${ref(b.id)} is closed.` : "Return booked in. Some equipment is still out.", st === "returned" ? "ok" : "warn");
+      if (byLeader) flash("Thanks, your return is recorded. The Quartermaster will check it next time they're in."
+        + (st === "returned" ? "" : " Some equipment is still out on this booking."), st === "returned" ? "ok" : "warn");
+      else flash(st === "returned" ? `All equipment back. ${ref(b.id)} is closed.` : "Return booked in. Some equipment is still out.", st === "returned" ? "ok" : "warn");
       go("booking", b.id);
     } else refresh();
   };
@@ -487,7 +575,8 @@ function Return({ go, refresh, arg }) {
   return (
     <>
       <p className="crumb"><a className="mono" onClick={() => go("booking", b.id)}>{ref(b.id)}</a> / Return</p>
-      <h1>Book in: {b.activity}</h1>
+      <h1>{byLeader ? "Return equipment" : "Book in"}: {b.activity}</h1>
+      {byLeader && <div className="flash info">No Quartermaster needed. Put the equipment back in the store, scan each item (or tick it), say what condition it's in, and confirm with your PIN. The Quartermaster checks it next time they're in.</div>}
       <p>From <b>{user(b.leader_id).name}</b>, due back {fd(b.end_date)}
         {b.end_date < today() && <> <b className="late">{daysLate(b.end_date)} days late</b></>}.
         Scan each item as it comes back and check its condition. Anything not marked stays on the booking as still out.</p>
@@ -526,8 +615,18 @@ function Return({ go, refresh, arg }) {
             <p><button type="button" className="link" onClick={() => setCounts(Object.fromEntries(Bk.map((i) => [i.id, { ...(counts[i.id] || {}), good: left(i), dam: 0, miss: 0 }])))}>All counted items back OK</button></p>
           </>}
         </section>
-        <div className="actions"><button className="primary big">Book in</button>
-          <span className="muted">{Object.values(marks).filter((m) => m.on).length} of {A.length} tagged items marked back.</span></div>
+        {byLeader ? (
+          <section className="panel sign">
+            <h2>Confirm your return</h2>
+            <p>I, <b>{db.me.name}</b>, have put the items ticked above back in the Q Store, and reported any damage or losses.</p>
+            <div className="signrow">
+              <label>Your PIN <span className="muted">(demo: 1111)</span><input type="password" name="pin" inputMode="numeric" required autoComplete="off" value={pin} onChange={(e) => setPin(e.target.value)} /></label>
+              <button className="primary big">Return equipment</button>
+              <span className="muted">{Object.values(marks).filter((m) => m.on).length} of {A.length} tagged items marked back.</span>
+            </div>
+          </section>
+        ) : <div className="actions"><button className="primary big">Book in</button>
+          <span className="muted">{Object.values(marks).filter((m) => m.on).length} of {A.length} tagged items marked back.</span></div>}
       </form>
     </>
   );
@@ -600,14 +699,18 @@ function Items({ go }) {
   const rows = activeTypes().filter((t) => !q || (t.name + t.category + t.location).toLowerCase().includes(q.toLowerCase()));
   const find = (e) => {
     e.preventDefault();
-    const a = db.S.assets.find((x) => x.tag.toUpperCase() === q.trim().toUpperCase());
-    if (a) return go("asset", a.id);
-    if (/^QB-\d+$/i.test(q.trim()) && byId("bookings", +q.trim().slice(3))) go("booking", +q.trim().slice(3));
+    const code = cleanCode(q);
+    if (!code) return;
+    const [k, r] = findCode(code);
+    if (k === "asset") return go("asset", r.id);
+    if (k === "type") return go("item", r.id);
+    if (k === "booking") return go("booking", r);
+    if (isQM() && !rows.length) go("register", code);
   };
   return (
     <>
       <div className="head"><h1>Equipment register</h1>
-        {isQM() && <div className="btns"><button onClick={() => go("labels")}>Print all labels</button><button className="primary" onClick={() => go("itemForm")}>Add equipment</button></div>}</div>
+        {isQM() && <div className="btns"><button onClick={() => go("register")}>Register by scanning</button><button onClick={() => go("scanner")}>Scanner test</button><button onClick={() => go("labels")}>Print all labels</button><button className="primary" onClick={() => go("itemForm")}>Add equipment</button></div>}</div>
       <form className="card filters" onSubmit={find}>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search, or scan a tag and press Enter" style={{ maxWidth: 360 }} />
       </form>
@@ -634,9 +737,10 @@ function ItemForm({ go }) {
   const submit = (e) => {
     e.preventDefault(); const d = formData(e);
     const id = tx(() => {
-      const kind = d.kind === "bulk" ? "bulk" : "asset", q = Math.max(int(d.qty), 0);
+      const kind = d.kind === "bulk" ? "bulk" : "asset", q = Math.max(int(d.qty), 0), code = cleanCode(d.barcode);
+      if (code) checkCodeFree(code);
       const t = { id: nid("types"), name: d.name.trim(), category: (d.category || "").trim(), kind, unit: "each", location: (d.location || "").trim(),
-        tag_prefix: (d.tag_prefix || "").trim().toUpperCase(), qty_total: kind === "bulk" ? q : 0, qty_us: 0, notes: "", active: true };
+        tag_prefix: (d.tag_prefix || "").trim().toUpperCase(), qty_total: kind === "bulk" ? q : 0, qty_us: 0, notes: "", barcode: code, active: true };
       db.S.types.push(t);
       if (kind === "asset" && q) { const tags = addAssets(t, Math.min(q, 100)); log("Assets added", `${t.name}: ${tags.join(", ")}`, { type_id: t.id }); }
       log("Item added", `${t.name} (${kind})`, { type_id: t.id });
@@ -658,9 +762,26 @@ function ItemForm({ go }) {
         </fieldset>
         <label>How many do you hold?<input type="number" name="qty" min="0" defaultValue="1" /></label>
         <label>Tag prefix (tagged items)<input name="tag_prefix" maxLength="6" placeholder="CNO → CNO-001…" /></label>
+        <label className="span2">Product barcode (optional)<input name="barcode" placeholder="Scan the shop barcode on the item or its packaging" onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }} />
+          <small className="muted">The same barcode on every one, e.g. on a box of pegs. For bulk items, scanning it counts 1 when issuing, returning or doing a stocktake.</small></label>
         <div className="actions span2"><button className="primary">Save</button><a onClick={() => go("items")}>Cancel</a></div>
       </form>
     </>
+  );
+}
+
+function ProductBarcode({ t, refresh }) {
+  const save = (e) => {
+    e.preventDefault();
+    const code = cleanCode(new FormData(e.currentTarget).get("barcode"));
+    if (tx(() => { if (code) checkCodeFree(code, t.id); t.barcode = code; log("Item changed", `${t.name}: product barcode ${code || "removed"}`, { type_id: t.id }); return true; }))
+      flash(code ? `Product barcode for ${t.name} set to ${code}.` : "Product barcode removed.");
+    refresh();
+  };
+  return (
+    <details className="addbox" style={{ marginTop: 0, borderTop: 0, paddingTop: 0, marginBottom: ".8rem" }}><summary>{t.barcode ? "Change" : "Add"} product barcode</summary>
+      <form className="inline" onSubmit={save}><input name="barcode" defaultValue={t.barcode} placeholder="Scan the shop barcode" /><button>Save</button></form>
+    </details>
   );
 }
 
@@ -707,7 +828,9 @@ function Item({ go, refresh, arg }) {
         <div className={`tile ${s.us ? "amber" : ""}`}><b>{s.us}</b><span>unserviceable</span></div>
         {t.kind === "asset" && <div className={`tile ${s.lost ? "red" : ""}`}><b>{s.lost}</b><span>missing</span></div>}
       </div>
-      <p className="muted">{t.kind === "asset" ? "Each item tagged" : "Counted in bulk"}{t.location ? " · Location: " + t.location : ""}</p>
+      <p className="muted">{t.kind === "asset" ? "Each item tagged" : "Counted in bulk"}{t.location ? " · Location: " + t.location : ""}
+        {t.barcode && <> · Product barcode <span className="mono">{t.barcode}</span></>}</p>
+      {isQM() && <ProductBarcode t={t} refresh={refresh} />}
       {t.kind === "asset" ? (
         <section className="panel"><h2>Tagged items</h2>
           {A.length ? (
@@ -718,6 +841,7 @@ function Item({ go, refresh, arg }) {
                   <td><a className="mono">{a.tag}</a></td><td>{a.serial}</td><td><APill s={a.status} /></td><td>{ob && <span className="mono">{ref(ob)}</span>}</td></tr>;
               })}</tbody></table>
           ) : <p className="empty">No tagged items yet.</p>}
+          {isQM() && <ScanAdd t={t} go={go} refresh={refresh} />}
           {isQM() && (
             <details className="addbox"><summary>Add tagged items</summary>
               <form className="grid4" onSubmit={addTags}>
@@ -936,11 +1060,12 @@ const SCREENS = { dashboard: Dashboard, bookings: Bookings, bookingForm: Booking
   users: Users, userForm: UserForm, log: Log, labels: Labels,
   stocktakes: Stocktakes, stocktake: Stocktake, stFinalise: StocktakeFinalise, stockSheet: StockSheet, stReport: StocktakeReport,
   reports: Reports, rRegister: ReportRegister, rOnIssue: ReportOnIssue, rLosses: ReportLosses, rMovements: ReportMovements };
+SCREENS.register = Register; SCREENS.scanner = ScannerTest; SCREENS.returns = Returns; SCREENS.retCheck = ReturnCheck;
 const AUDIT = ["stocktakes", "stocktake", "stFinalise", "stockSheet", "stReport", "reports", "rRegister", "rOnIssue", "rLosses", "rMovements"];
-const QM_ONLY = ["issue", "ret", "defects", "users", "userForm", "log", "labels", "itemForm", ...AUDIT];
+const QM_ONLY = ["issue", "returns", "retCheck", "defects", "users", "userForm", "log", "labels", "itemForm", "register", ...AUDIT];
 const NAV = [["dashboard", "Dashboard", ["dashboard"]], ["bookings", "Bookings", ["bookings", "booking", "bookingForm", "issue", "ret", "voucher"]],
-  ["availability", "Availability", ["availability"]], ["items", "Equipment", ["items", "item", "asset", "itemForm", "labels"]]];
-const QM_NAV = [["defects", "Repairs & losses", ["defects"]], ["stocktakes", "Stocktake", ["stocktakes", "stocktake", "stFinalise", "stockSheet", "stReport"]],
+  ["availability", "Availability", ["availability"]], ["items", "Equipment", ["items", "item", "asset", "itemForm", "labels", "register", "scanner"]]];
+const QM_NAV = [["returns", "Returns", ["returns", "retCheck"]], ["defects", "Repairs & losses", ["defects"]], ["stocktakes", "Stocktake", ["stocktakes", "stocktake", "stFinalise", "stockSheet", "stReport"]],
   ["reports", "Reports", ["reports", "rRegister", "rOnIssue", "rLosses", "rMovements"]], ["users", "Leaders", ["users", "userForm"]], ["log", "Log", ["log"]]];
 
 export default function App() {
@@ -981,6 +1106,7 @@ export default function App() {
               {v === "bookings" && isQM() && requested > 0 && <i className="badge">{requested}</i>}
               {v === "bookings" && isQM() && late > 0 && <i className="badge red">{late}</i>}
               {v === "defects" && openDefects > 0 && <i className="badge amber">{openDefects}</i>}
+              {v === "returns" && pendingReturns().length > 0 && <i className="badge amber">{pendingReturns().length}</i>}
               {v === "stocktakes" && S.stocktakes.some((x) => x.status === "open") && <i className="badge amber">open</i>}
             </a>
           ))}</nav>

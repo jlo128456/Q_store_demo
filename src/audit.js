@@ -1,5 +1,5 @@
 /* Stocktake rules for the demo. Mirrors qstore/audit.py in the Python app. */
-import { db, byId, nid, now, log, defect, typeStock, activeTypes, ref, StoresError } from "./store.js";
+import { db, byId, nid, now, log, defect, typeStock, activeTypes, ref, StoresError, findCode } from "./store.js";
 
 export const OUTCOMES = {
   ok: ["Present", "ok"],
@@ -80,9 +80,18 @@ export function startStocktake(category, name) {
 
 /* Returns [ok, level, message, assetId]. */
 export function scanForStocktake(st, code, undo) {
-  const c = code.trim().toUpperCase();
-  const a = db.S.assets.find((x) => x.tag.toUpperCase() === c || (x.serial && x.serial.toUpperCase() === c));
-  if (!a) return [false, "bad", `${code}: not on the register.`];
+  const [k, a] = findCode(code);
+  if (k === "type") { // a product barcode: bulk items count 1 per scan
+    const t = a;
+    if (st.category && t.category !== st.category) return [false, "warn", `${t.name} is outside this ${st.category} stocktake.`];
+    if (t.kind !== "bulk") return [false, "warn", `That's the product barcode for ${t.name}. Scan each item's own tag instead.`];
+    if (undo) return [false, "warn", "Change the count in the box instead."];
+    const n = (countFor(st, t.id) ?? 0) + 1;
+    db.S.st_counts = db.S.st_counts.filter((x) => !(x.stocktake_id === st.id && x.type_id === t.id));
+    db.S.st_counts.push({ stocktake_id: st.id, type_id: t.id, counted: n, at: now(), user_id: db.me.id });
+    return [true, "ok", `+1 ${t.name} (counted ${n})`, null, { bulk: t.id, count: n }];
+  }
+  if (k !== "asset") return [false, "bad", `${code}: not on the register.`];
   const t = byId("types", a.type_id);
   if (undo) {
     db.S.st_scans = db.S.st_scans.filter((x) => !(x.stocktake_id === st.id && x.asset_id === a.id));
