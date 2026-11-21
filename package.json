@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "start": "node build.mjs && npx --yes serve dist"
+    "start": "node build.mjs && npx --yes serve dist",
+    "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
     "react": "18.3.1",
